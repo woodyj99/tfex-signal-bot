@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TFEX Signal Dashboard — เดโม</title>
+<style>
+ :root{--bg:#0e1116;--card:#171b22;--muted:#8b95a5;--line:#232a35;
+   --buy:#22c55e;--sell:#ef4444;--dca:#3b82f6;--prep:#eab308;--hold:#64748b;--text:#e6edf3}
+ *{box-sizing:border-box} body{margin:0;font-family:'Segoe UI',Tahoma,sans-serif;background:var(--bg);color:var(--text)}
+ header{padding:20px 24px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+ h1{font-size:18px;margin:0;font-weight:600} .sub{color:var(--muted);font-size:13px}
+ .demo{background:#3b2f0b;color:#f5d16b;border:1px solid #6b5a1a;border-radius:8px;padding:6px 12px;font-size:12px;margin:16px 24px 0}
+ .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;padding:24px}
+ .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;position:relative;overflow:hidden}
+ .card .bar{position:absolute;left:0;top:0;bottom:0;width:5px}
+ .sym{font-size:20px;font-weight:700;letter-spacing:.5px} .tf{color:var(--muted);font-size:12px}
+ .badge{display:inline-block;margin-top:10px;padding:6px 14px;border-radius:999px;font-weight:700;font-size:15px;color:#fff}
+ .row{display:flex;justify-content:space-between;margin-top:12px;font-size:14px;border-top:1px solid var(--line);padding-top:8px}
+ .row span:first-child{color:var(--muted)}
+ .time{color:var(--muted);font-size:12px;margin-top:12px}
+ footer{color:var(--muted);font-size:12px;padding:16px 24px;border-top:1px solid var(--line)}
+</style></head><body>
+<header>
+  <div><h1>📊 TFEX Signal Dashboard</h1><div class="sub">สัญญาณล่าสุดจาก TradingView · อัปเดตอัตโนมัติทุก 15 วินาที</div></div>
+  <div class="sub">อัปเดตหน้าเมื่อ 09:20 น.</div>
+</header>
+<div class="demo">⚠️ นี่คือ <b>เดโมด้วยข้อมูลตัวอย่าง</b> เพื่อให้เห็นหน้าตา — เมื่อเชื่อมกับ TradingView จริง การ์ดจะอัปเดตตามสัญญาณที่ยิงเข้ามา</div>
+<div id="grid" class="grid"></div>
+<footer>เครื่องมือช่วยดูจังหวะทางเทคนิค ไม่ใช่คำแนะนำการลงทุน · futures มีวันหมดอายุและใช้ margin โปรดบริหารความเสี่ยง</footer>
+<script>
+const DEMO={
+ S50U26:{symbol:"S50U26",tf:"1D",action:"PREP",price:905.4,rsi:48.2,dip_pct:1.1,time:"2026-07-23 09:15:02"},
+ GOU26:{symbol:"GOU26",tf:"60",action:"BUY",price:58230,rsi:55.0,dip_pct:0.6,time:"2026-07-23 09:12:47"},
+ USDZ26:{symbol:"USDZ26",tf:"1D",action:"SELL",price:34.18,rsi:38.5,dip_pct:0.0,time:"2026-07-23 09:05:31"},
+};
+const COL={BUY:'var(--buy)',SELL:'var(--sell)',DCA:'var(--dca)',PREP:'var(--prep)',HOLD:'var(--hold)'};
+const TH={BUY:'ซื้อจริง (ตัด 0 ขึ้น)',SELL:'ขาย (ตัด 0 ลง)',DCA:'ย่อ — เข้าเพิ่ม',PREP:'เตรียมซื้อ (ตัด Signal)',HOLD:'ถือ / รอ'};
+function card(s){const c=COL[s.action]||COL.HOLD;
+ return `<div class="card"><div class="bar" style="background:${c}"></div>
+  <div class="sym">${s.symbol}</div><span class="tf">TF ${s.tf||'-'}</span>
+  <div><span class="badge" style="background:${c}">${s.action} · ${TH[s.action]||''}</span></div>
+  <div class="row"><span>ราคา</span><span>${s.price??'-'}</span></div>
+  <div class="row"><span>RSI</span><span>${s.rsi??'-'}</span></div>
+  <div class="row"><span>ย่อจากไฮ</span><span>${s.dip_pct??'-'}%</span></div>
+  <div class="time">🕒 ${s.time||''}</div></div>`;}
+document.getElementById('grid').innerHTML=Object.keys(DEMO).map(k=>card(DEMO[k])).join('');
+</script></body></html>
