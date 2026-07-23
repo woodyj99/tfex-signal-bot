@@ -1,0 +1,218 @@
+//@version=5
+// =============================================================================
+//  TFEX Signal Bot v2  —  Buy / Sell / DCA + Fibonacci
+//  ใช้กับ: S50 (SET50 Futures), Gold Futures, USD Futures หรือ symbol อื่น ๆ
+//
+//  กติกาสัญญาณหลัก (ตามที่ผู้ใช้ต้องการ):
+//    BUY  = MACD ตัดเส้น Signal ขึ้น (bullish crossover)
+//    SELL = MACD ตัดเส้น 0 ลง (macd line crossunder zero)
+//    DCA  = ราคาย่อจากจุดสูงล่าสุด >= % ที่ตั้ง (จังหวะเข้าเพิ่มตอนย่อ)
+//
+//  ตัวช่วยวิเคราะห์: Fibonacci Retracement (อัตโนมัติจาก swing ล่าสุด)
+//                    + Trend-based Fib Extension (อัตโนมัติจาก 3 pivot ล่าสุด)
+//                    + RSI/EMA แสดงเป็นบริบทในตาราง Dashboard
+//
+//  หมายเหตุ: ช่วย "บอกจังหวะทางเทคนิค" เท่านั้น ไม่ใช่คำแนะนำการลงทุน
+//            futures มีวันหมดอายุ+ใช้ margin โปรดบริหารความเสี่ยง
+// =============================================================================
+indicator("TFEX Signal Bot v2", overlay=true, max_labels_count=500, max_lines_count=100)
+
+// ---------- Inputs ----------
+grpMACD = "MACD (สัญญาณหลัก)"
+macdFast = input.int(12, "MACD Fast", minval=1, group=grpMACD)
+macdSlow = input.int(26, "MACD Slow", minval=2, group=grpMACD)
+macdSig  = input.int(9,  "MACD Signal", minval=1, group=grpMACD)
+
+grpRSI  = "RSI (บริบท)"
+rsiLen  = input.int(14, "RSI Length", minval=2, group=grpRSI)
+rsiOB   = input.int(70, "RSI Overbought", group=grpRSI)
+rsiOS   = input.int(30, "RSI Oversold",  group=grpRSI)
+
+grpMA   = "EMA (บริบทเทรนด์)"
+maFast  = input.int(20,  "EMA เร็ว", minval=1, group=grpMA)
+maSlow  = input.int(50,  "EMA ช้า",  minval=2, group=grpMA)
+showMAs = input.bool(true, "วาดเส้น EMA", group=grpMA)
+
+grpDCA  = "DCA / เข้าตอนย่อ (Pullback)"
+dipLook = input.int(20,   "มองย้อนหลังหาจุดสูงสุด (แท่ง)", minval=3, group=grpDCA)
+dipPct  = input.float(3.0,"ย่อจากจุดสูงกี่ % ถึงถือว่า 'ย่อ'", minval=0.1, step=0.1, group=grpDCA)
+useTrendFilterDCA = input.bool(true, "ให้ DCA เข้าเฉพาะตอนเทรนด์ยังไม่พัง", group=grpDCA)
+
+grpFib  = "Fibonacci"
+pvLen    = input.int(10, "Pivot Lookback (ซ้าย/ขวา)", minval=2, group=grpFib)
+showFib  = input.bool(true,  "แสดง Fib Retracement (swing ล่าสุด)", group=grpFib)
+showExt  = input.bool(true,  "แสดง Trend-based Fib Extension (3 จุดล่าสุด)", group=grpFib)
+extRight = input.int(20, "ยืดเส้น Fib ไปขวา (แท่ง)", minval=0, group=grpFib)
+
+grpUI   = "การแสดงผล"
+showTable = input.bool(true, "แสดงตาราง Dashboard บนกราฟ", group=grpUI)
+
+// ---------- Indicators ----------
+[macdLine, signalLine, histLine] = ta.macd(close, macdFast, macdSlow, macdSig)
+rsi   = ta.rsi(close, rsiLen)
+emaF  = ta.ema(close, maFast)
+emaS  = ta.ema(close, maSlow)
+
+recentHigh  = ta.highest(high, dipLook)
+dipFromHigh = (recentHigh - close) / recentHigh * 100.0
+isDip = dipFromHigh >= dipPct
+
+upTrend   = emaF > emaS
+downTrend = emaF < emaS
+
+// ---------- Signal logic (ระบบ 2 จังหวะ ตามที่ผู้ใช้ต้องการ) ----------
+prepSig = ta.crossover(macdLine, signalLine)     // เหลือง: MACD ตัด Signal ขึ้น = เตรียมเข้าซื้อ
+buySig  = ta.crossover(macdLine, 0)              // เขียว : MACD ตัด 0 ขึ้น    = ซื้อจริง
+sellSig = ta.crossunder(macdLine, 0)             // แดง   : MACD ตัด 0 ลง      = ขาย
+dcaSig  = isDip and (not useTrendFilterDCA or not downTrend)
+
+// action สำหรับ alert (อิงเหตุการณ์ ตามลำดับความสำคัญ)
+string action = "HOLD"
+color  actCol = color.gray
+if sellSig
+    action := "SELL"
+    actCol := color.red
+else if buySig
+    action := "BUY"
+    actCol := color.green
+else if prepSig
+    action := "PREP"
+    actCol := color.yellow
+else if dcaSig
+    action := "DCA"
+    actCol := color.new(color.blue, 0)
+
+// สถานะปัจจุบัน (สำหรับตาราง) — ไล่ตามตำแหน่ง MACD
+string phase = macdLine > 0 ? "โซนซื้อ (>0) ▲" : (macdLine > signalLine ? "เตรียมซื้อ ⚠" : "โซนขาย (<0) ▼")
+color  phaseCol = macdLine > 0 ? color.green : (macdLine > signalLine ? color.yellow : color.red)
+
+// ---------- Plots: EMA + สัญญาณ ----------
+plot(showMAs ? emaF : na, "EMA Fast", color=color.new(color.orange, 0), linewidth=1)
+plot(showMAs ? emaS : na, "EMA Slow", color=color.new(color.blue, 0),   linewidth=1)
+
+plotshape(prepSig, title="เตรียมซื้อ", style=shape.labelup,   location=location.belowbar, color=color.yellow, text="เตรียม", textcolor=color.black, size=size.tiny)
+plotshape(buySig,  title="Buy",       style=shape.labelup,   location=location.belowbar, color=color.green,  text="BUY",   textcolor=color.white, size=size.tiny)
+plotshape(sellSig, title="Sell",      style=shape.labeldown, location=location.abovebar, color=color.red,    text="SELL",  textcolor=color.white, size=size.tiny)
+plotshape(dcaSig and not buySig and not sellSig and not prepSig, title="DCA", style=shape.labelup, location=location.belowbar, color=color.new(color.blue,0), text="DCA", textcolor=color.white, size=size.tiny)
+bgcolor(buySig ? color.new(color.green,85) : sellSig ? color.new(color.red,85) : prepSig ? color.new(color.yellow,80) : na)
+
+// =============================================================================
+//  Fibonacci — จับ pivot อัตโนมัติ
+// =============================================================================
+ph = ta.pivothigh(pvLen, pvLen)
+pl = ta.pivotlow(pvLen, pvLen)
+
+var float lastPH = na
+var int   lastPHx = na
+var float lastPL = na
+var int   lastPLx = na
+if not na(ph)
+    lastPH := ph
+    lastPHx := bar_index - pvLen
+if not na(pl)
+    lastPL := pl
+    lastPLx := bar_index - pvLen
+
+// เก็บ pivot ล่าสุดเป็นลำดับ (สำหรับ trend-based extension)
+var array<float> pvP = array.new_float()
+var array<int>   pvX = array.new_int()
+if not na(ph)
+    array.push(pvP, ph)
+    array.push(pvX, bar_index - pvLen)
+if not na(pl)
+    array.push(pvP, pl)
+    array.push(pvX, bar_index - pvLen)
+while array.size(pvP) > 8
+    array.shift(pvP)
+    array.shift(pvX)
+
+// เก็บ object เส้น/ป้าย เพื่อลบก่อนวาดใหม่ทุกครั้ง
+var array<line>  fibLn = array.new_line()
+var array<label> fibLb = array.new_label()
+
+var string fibNote = "-"   // สำหรับตาราง: ราคาอยู่ใกล้ระดับไหน
+
+f_level_color(r) =>
+    r == 0.618 or r == 1.618 ? color.new(color.orange, 0) : color.new(color.teal, 30)
+
+if barstate.islast
+    // ล้างของเก่า
+    if array.size(fibLn) > 0
+        for i = 0 to array.size(fibLn) - 1
+            line.delete(array.get(fibLn, i))
+        array.clear(fibLn)
+    if array.size(fibLb) > 0
+        for i = 0 to array.size(fibLb) - 1
+            label.delete(array.get(fibLb, i))
+        array.clear(fibLb)
+    fibNote := "-"
+
+    // ----- Fib Retracement จาก swing ล่าสุด -----
+    if showFib and not na(lastPH) and not na(lastPL)
+        hi = lastPH
+        lo = lastPL
+        isUp = lastPHx > lastPLx           // จุดสูงเกิดหลังจุดต่ำ = ขาขึ้น
+        anchorX = math.min(lastPHx, lastPLx)
+        rng = hi - lo
+        levels = array.from(0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0)
+        nearest = 1e12
+        for i = 0 to array.size(levels) - 1
+            r = array.get(levels, i)
+            price = isUp ? hi - rng * r : lo + rng * r
+            col = f_level_color(r)
+            ln = line.new(anchorX, price, bar_index + extRight, price, xloc=xloc.bar_index, color=col, style=line.style_dotted, width=1)
+            array.push(fibLn, ln)
+            lb = label.new(bar_index + extRight, price, "R " + str.tostring(r) + "  " + str.tostring(price, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(color.black, 30), textcolor=col, size=size.small)
+            array.push(fibLb, lb)
+            if math.abs(close - price) < nearest
+                nearest := math.abs(close - price)
+                fibNote := "R " + str.tostring(r)
+
+    // ----- Trend-based Fib Extension จาก 3 pivot ล่าสุด -----
+    if showExt and array.size(pvP) >= 3
+        n = array.size(pvP)
+        p1 = array.get(pvP, n - 3)
+        p2 = array.get(pvP, n - 2)
+        p3 = array.get(pvP, n - 1)
+        x3 = array.get(pvX, n - 1)
+        move = p2 - p1
+        exts = array.from(0.0, 0.618, 1.0, 1.618, 2.618)
+        for i = 0 to array.size(exts) - 1
+            r = array.get(exts, i)
+            price = p3 + move * r
+            col = (r == 1.618) ? color.new(color.fuchsia, 0) : color.new(color.purple, 25)
+            ln = line.new(x3, price, bar_index + extRight, price, xloc=xloc.bar_index, color=col, style=line.style_dashed, width=1)
+            array.push(fibLn, ln)
+            lb = label.new(bar_index + extRight, price, "E " + str.tostring(r) + "  " + str.tostring(price, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(color.black, 30), textcolor=col, size=size.small)
+            array.push(fibLb, lb)
+
+// =============================================================================
+//  ตาราง Dashboard บนกราฟ
+// =============================================================================
+var table dash = table.new(position.top_right, 2, 8, border_width=1)
+if showTable and barstate.islast
+    f_row(i, k, v, vc) =>
+        table.cell(dash, 0, i, k, text_color=color.white, text_size=size.small, bgcolor=color.new(color.black,20))
+        table.cell(dash, 1, i, v, text_color=vc,          text_size=size.small, bgcolor=color.new(color.black,40))
+    table.cell(dash, 0, 0, "TFEX Signal", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.black,0))
+    table.cell(dash, 1, 0, syminfo.ticker, text_color=color.white, text_size=size.normal, bgcolor=color.new(color.black,0))
+    f_row(1, "สถานะ", phase, phaseCol)
+    f_row(2, "MACD", macdLine>signalLine ? "เหนือ Signal ▲" : "ใต้ Signal ▼", macdLine>signalLine ? color.green : color.red)
+    f_row(3, "MACD vs 0", macdLine>0 ? "บวก (>0)" : "ลบ (<0)", macdLine>0 ? color.green : color.red)
+    f_row(4, "RSI", str.tostring(rsi,"#.0") + (rsi>=rsiOB ? " (OB)" : rsi<=rsiOS ? " (OS)" : ""), rsi>=rsiOB ? color.red : rsi<=rsiOS ? color.green : color.white)
+    f_row(5, "เทรนด์ EMA", upTrend ? "ขึ้น ▲" : "ลง ▼", upTrend ? color.green : color.red)
+    f_row(6, "ย่อจากไฮ", str.tostring(dipFromHigh,"#.0") + "%", isDip ? color.new(color.blue,0) : color.white)
+    f_row(7, "ใกล้ Fib", fibNote, color.new(color.orange,0))
+
+// =============================================================================
+//  Alerts (ส่งเข้า LINE ผ่าน webhook)
+// =============================================================================
+alertMsg = '{"symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","action":"' + action + '","price":' + str.tostring(close, format.mintick) + ',"rsi":' + str.tostring(rsi,"#.0") + ',"dip_pct":' + str.tostring(dipFromHigh,"#.0") + ',"macd":' + str.tostring(macdLine,"#.####") + ',"fib":"' + fibNote + '"}'
+
+alertcondition(prepSig, title="TFEX เตรียมซื้อ (MACD ตัด Signal ขึ้น)", message="PREP signal")
+alertcondition(buySig,  title="TFEX BUY (MACD ตัด 0 ขึ้น)", message="BUY signal")
+alertcondition(sellSig, title="TFEX SELL (MACD ตัด 0 ลง)", message="SELL signal")
+alertcondition(dcaSig,  title="TFEX DCA (ย่อแล้วซื้อ)", message="DCA signal")
+
+if barstate.isconfirmed and (prepSig or buySig or sellSig or dcaSig)
+    alert(alertMsg, alert.freq_once_per_bar_close)
