@@ -28,6 +28,40 @@ app = Flask(__name__)
 LINE_TOKEN     = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_TO        = os.environ.get("LINE_TO", "")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+# กุญแจสำหรับ /api/push-text (ให้งานอัตโนมัติส่งข้อความผ่านบอท) — ไม่ตั้งไว้ = ปิด endpoint นี้
+PUSH_KEY       = os.environ.get("PUSH_KEY", "")
+
+# วันหยุดสถาบันการเงิน (ประกาศ ธปท.) — ไม่ส่งสรุปเช้าในวันเหล่านี้ + เสาร์/อาทิตย์
+# เพิ่มวันหยุดพิเศษได้ทาง env EXTRA_HOLIDAYS="2027-01-04,2027-05-21"
+BANK_HOLIDAYS = {
+    # 2569 / 2026 (เฉพาะที่ยังมาถึง)
+    "2026-12-07": "ชดเชยวันพ่อแห่งชาติ",
+    "2026-12-10": "วันรัฐธรรมนูญ",
+    "2026-12-16": "วันหยุดพิเศษ (พระราชพิธีถวายพระเพลิงพระบรมศพ)",
+    "2026-12-31": "วันสิ้นปี",
+    # 2570 / 2027
+    "2027-01-01": "วันขึ้นปีใหม่",
+    "2027-02-22": "ชดเชยวันมาฆบูชา",
+    "2027-04-06": "วันจักรี",
+    "2027-04-13": "วันสงกรานต์",
+    "2027-04-14": "วันสงกรานต์",
+    "2027-04-15": "วันสงกรานต์",
+    "2027-05-03": "ชดเชยวันแรงงาน",
+    "2027-05-04": "วันฉัตรมงคล",
+    "2027-05-20": "วันวิสาขบูชา",
+    "2027-06-03": "วันเฉลิมฯ พระราชินี",
+    "2027-07-19": "ชดเชยวันอาสาฬหบูชา",
+    "2027-07-28": "วันเฉลิมฯ ร.10",
+    "2027-08-12": "วันแม่แห่งชาติ",
+    "2027-10-13": "วันนวมินทรมหาราช",
+    "2027-10-25": "ชดเชยวันปิยมหาราช",
+    "2027-12-06": "ชดเชยวันพ่อแห่งชาติ",
+    "2027-12-10": "วันรัฐธรรมนูญ",
+    "2027-12-31": "วันสิ้นปี",
+}
+for _d in os.environ.get("EXTRA_HOLIDAYS", "").split(","):
+    if _d.strip():
+        BANK_HOLIDAYS.setdefault(_d.strip(), "วันหยุดพิเศษ")
 
 BASE = os.path.dirname(__file__)
 LATEST_PATH    = os.path.join(BASE, "signals.json")     # สถานะล่าสุดต่อสัญญา (TFEX signal)
@@ -80,6 +114,17 @@ def _save(path, data):
 
 def now_bkk():
     return dt.datetime.now(dt.timezone(dt.timedelta(hours=7)))
+
+
+def business_day_info(day=None):
+    """คืน (เป็นวันทำการไหม, เหตุผลถ้าไม่ใช่)"""
+    day = day or now_bkk().date()
+    if day.weekday() >= 5:
+        return False, "เสาร์/อาทิตย์"
+    name = BANK_HOLIDAYS.get(day.isoformat())
+    if name:
+        return False, name
+    return True, ""
 
 
 def push_line(text):
@@ -330,39 +375,34 @@ def api_summary():
     return jsonify(build_summary())
 
 
+STATUS_DOT = {"BUY": "🟢เขียว", "SELL": "🔴แดง", "HOLD": "🟡เหลือง"}
+ACTION_SHORT = {
+    "SELL": "ขาย (เทรนด์พัง)", "CUT_LOSS": "cut loss", "TRAIL_EXIT": "ขายล็อกกำไร",
+    "TAKE_PARTIAL": "ขายบางส่วน", "DCA": "ซื้อสะสม", "BUY": "ซื้อได้",
+    "HOLD_LONG": "ถือ", "WATCH": "ถือ เฝ้าดู", "WAIT": "ถือ รอสัญญาณ", "HOLD": "ถือ",
+}
+
+
 def summary_text(s):
-    L = [f"📋 สรุปคำแนะนำประจำวัน {s['date']}",
-         f"กำไร/ขาดทุนรวมในพอร์ต: {s['total_pnl']:+,.2f}", ""]
-    if s["sell"]:
-        L.append(f"🔴 ควรขายออก ({len(s['sell'])})")
-        for r in s["sell"]:
-            L.append(f"• {r['symbol']} — {ADVICE_TH.get(r['advice_code'], r['advice_code'])} "
-                     f"| ราคา {r['price']} | P/L {fnum(r.get('pnl_pct'))}%")
-        L.append("")
-    if s["take"]:
-        L.append(f"🟠 ทยอยล็อกกำไร ({len(s['take'])})")
-        for r in s["take"]:
-            L.append(f"• {r['symbol']} — กำไร {fnum(r.get('pnl_pct'))}% | ราคา {r['price']}")
-        L.append("")
-    if s["add"]:
-        L.append(f"🔵 ควรซื้อเพิ่ม / DCA ({len(s['add'])})")
-        for r in s["add"]:
-            L.append(f"• {r['symbol']} — ย่อ {fnum(r.get('dip_pct'),1)}% | ราคา {r['price']} "
-                     f"| stop {r['stop']}")
-        L.append("")
+    """สรุปสั้น 1 บรรทัดต่อหุ้น: หุ้น  %กำไร  สีเทรนด์  ทำอะไร"""
+    rows = s["sell"] + s["take"] + s["add"] + s["hold"]
+    L = [f"📈 สรุปพอร์ต {s['date']}"]
+    if not rows:
+        L.append("ยังไม่มีข้อมูลพอร์ตจาก Port Monitor")
+    for r in rows:
+        code = r.get("advice_code", "HOLD")
+        pnl = r.get("pnl_pct")
+        pnl_txt = "-" if pnl in (None, "", "null") else f"{float(pnl):+.1f}%"
+        dot = STATUS_DOT.get(str(r.get("status", "HOLD")).upper(), "⚪")
+        act = ACTION_SHORT.get(code, code)
+        if code in SELL_CODES and r.get("stop") not in (None, "", "null"):
+            act += f" (stop {r['stop']})"
+        L.append(f"{r['symbol']} {pnl_txt} {dot} → {act}")
     if s["buy"]:
-        L.append(f"🟢 น่าซื้อเข้าใหม่ — ผ่านสกรีน SET50 ({len(s['buy'])})")
-        for i in s["buy"][:10]:
-            L.append(f"• {i['symbol']} {i['score']}/6 | ราคา {i['price']} "
-                     f"| stop {i['stop']} | เป้า {i['target']}")
-        L.append("")
-    if s["hold"]:
-        L.append(f"🟡 ถือต่อ ({len(s['hold'])}): " + ", ".join(r["symbol"] for r in s["hold"]))
-        L.append("")
-    if not (s["sell"] or s["add"] or s["buy"] or s["take"]):
-        L.append("วันนี้ยังไม่มีคำแนะนำให้ทำอะไร — ถือเงินสด/ถือของเดิม รอสัญญาณ")
-        L.append("")
-    L.append("— เครื่องมือช่วยดูจังหวะทางเทคนิค ไม่ใช่คำแนะนำการลงทุน")
+        L.append("🔎 น่าซื้อใหม่: " + ", ".join(f"{i['symbol']}({i['score']}/6)" for i in s["buy"][:5]))
+    todo = [r["symbol"] for r in s["sell"] + s["take"] + s["add"]]
+    L.append("👉 วันนี้ต้องลงมือ: " + (", ".join(todo) if todo else "ไม่มี"))
+    L.append("ไม่ใช่คำแนะนำการลงทุน ตัดสินใจเองนะครับ")
     return "\n".join(L)
 
 
@@ -374,10 +414,47 @@ def api_daily_summary():
     has_reco = bool(s["sell"] or s["add"] or s["buy"] or s["take"])
     want = request.args.get("push") in ("1", "true", "yes")
     only = request.args.get("only_if_any") in ("1", "true", "yes")
-    if want and (has_reco or not only):
+    force = request.args.get("force") in ("1", "true", "yes")
+    is_bd, why = business_day_info()
+    if want and not is_bd and not force:
+        detail = f"skip: วันหยุด ({why})"
+    elif want and (has_reco or not only):
         pushed, detail = push_line(text)
-    return jsonify({"ok": True, "has_reco": has_reco, "text": text,
+    return jsonify({"ok": True, "has_reco": has_reco, "text": text, "business_day": is_bd,
                     "line_pushed": pushed, "line_detail": detail})
+
+
+@app.route("/api/business-day")
+def api_business_day():
+    day = now_bkk().date()
+    q = request.args.get("date")
+    if q:
+        try:
+            day = dt.date.fromisoformat(q)
+        except ValueError:
+            return jsonify({"ok": False, "error": "date ต้องเป็น YYYY-MM-DD"}), 400
+    is_bd, why = business_day_info(day)
+    return jsonify({"ok": True, "date": day.isoformat(), "business_day": is_bd, "reason": why})
+
+
+@app.route("/api/push-text", methods=["POST"])
+def api_push_text():
+    """ให้งานอัตโนมัติ (น้อง TFEX) ส่งข้อความเข้า LINE ผ่านบอท
+    POST /api/push-text?key=<PUSH_KEY>  body: {"text": "...", "skip_holiday": true}"""
+    if not PUSH_KEY:
+        return jsonify({"ok": False, "error": "PUSH_KEY not configured"}), 403
+    if request.args.get("key") != PUSH_KEY and request.headers.get("X-Push-Key") != PUSH_KEY:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    d = parse_payload(request)
+    text = str(d.get("text") or "").strip()
+    if not text:
+        return jsonify({"ok": False, "error": "text is empty"}), 400
+    if d.get("skip_holiday"):
+        is_bd, why = business_day_info()
+        if not is_bd:
+            return jsonify({"ok": True, "line_pushed": False, "line_detail": f"skip: วันหยุด ({why})"})
+    pushed, detail = push_line(text)
+    return jsonify({"ok": pushed, "line_pushed": pushed, "line_detail": detail})
 
 
 # ---------------------------------------------------------------- write APIs
